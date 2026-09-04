@@ -983,6 +983,25 @@ app.secret_key = "todo-dev-secret-isaac"
 db = TaskDB()
 
 # ============================================================
+# Template Filters and Context Processors
+# ============================================================
+
+@app.context_processor
+def inject_now():
+    """Injeta função now() nos templates"""
+    return {'now': datetime.now}
+
+@app.template_filter('datetime_from_iso')
+def datetime_from_iso_filter(iso_string):
+    """Converte string ISO para datetime"""
+    if not iso_string:
+        return None
+    try:
+        return datetime.fromisoformat(iso_string)
+    except (ValueError, TypeError):
+        return None
+
+# ============================================================
 # Routes
 # ============================================================
 
