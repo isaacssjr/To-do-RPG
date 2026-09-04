@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-To-Do App com XP System e Gamificação - VERSÃO 5.7
+To-Do App com XP System e Gamificação - VERSÃO 6.0
 Desenvolvido para Isaac - Integra
 Sistema de items, gold, streaks, badges, troféus mensais
 Com ativação de itens permanentes, drops BALANCEADOS, LOJA com markup 5x
-MODIFICAÇÕES V5.7:
-- Sistema de equipamento para itens permanentes (bordas douradas quando equipado)
-- Bolsa Mística agora é equipavel/desequipavel (não some do inventário)
-- Badge speed_demon implementada (5 tarefas em 1 hora)
-- Reset mensal limpa recent_completions
-- Validação na compra de itens permanentes duplicados
-- Nomes atualizados: Certarioca → Cigarrinho, Certare → Integra
+MODIFICAÇÕES V6.0:
+- Botão de configurações com reset manual (reseta gold também)
+- Campo de hora preenchido automaticamente com hora atual
+- Novos valores de XP: low=3, medium=5, high=7
+- Itens rebalanceados: livro (+2 XP, +1 Gold), espada (+1 XP, +2 Gold), escudo (+2 proteção)
+- Sistema de Game: Baú diário e Expedição
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import subprocess
 import json
 import webbrowser
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
 
@@ -44,9 +43,9 @@ class DependencyManager:
         """Exibe banner de inicialização"""
         print("""
 ╔════════════════════════════════════════════════════════════════╗
-║  📝 TODO APP COM XP SYSTEM - VERSÃO 5.7                       ║
-║  🚀 Isaac (Integra) - Sistema de Equipamento Implementado     ║
-║  ✨ Novidades: Bolsa Equipavel, Speed Demon, UI Dourada       ║
+║  📝 TODO APP COM XP SYSTEM - VERSÃO 6.0                       ║
+║  🚀 Isaac (Integra) - Sistema de Game Implementado            ║
+║  ✨ Novidades: Reset Manual, Baú Diário, Expedição            ║
 ║  🔧 Verificando dependências...                               ║
 ╚════════════════════════════════════════════════════════════════╝
         """)
@@ -211,7 +210,7 @@ ITEMS_CONFIG = {
         "emoji": "📖",
         "type": "permanent",
         "rarity": "epic",
-        "description": "+1 XP e +1 Gold por tarefa",
+        "description": "+2 XP e +1 Gold por tarefa",
         "cost": 0,
         "sell_price": 30,
         "shop_price": 150,
@@ -223,7 +222,7 @@ ITEMS_CONFIG = {
         "emoji": "⚔️",
         "type": "permanent",
         "rarity": "epic",
-        "description": "+2 Gold por tarefa",
+        "description": "+1 XP e +2 Gold por tarefa",
         "cost": 0,
         "sell_price": 20,
         "shop_price": 100,
@@ -235,7 +234,7 @@ ITEMS_CONFIG = {
         "emoji": "🛡️",
         "type": "permanent",
         "rarity": "epic",
-        "description": "+1 proteção em XP perdido",
+        "description": "+2 proteção em XP perdido",
         "cost": 0,
         "sell_price": 20,
         "shop_price": 100,
@@ -392,6 +391,10 @@ class UserStats:
     trophies: List[Trophy] = field(default_factory=list)
     max_inventory: int = 6
     recent_completions: List[str] = field(default_factory=list)  # Para speed_demon badge
+    # Sistema de Game
+    daily_chest_claimed: str = None  # Data do último baú aberto
+    expedition_active: bool = False
+    expedition_start_time: Optional[str] = None
 
     def to_dict(self):
         data = asdict(self)
@@ -406,11 +409,17 @@ class UserStats:
         badges = [Badge.from_dict(b) for b in data.pop('badges', [])]
         trophies = [Trophy.from_dict(t) for t in data.pop('trophies', [])]
         max_inventory = data.pop('max_inventory', 6)
+        daily_chest_claimed = data.pop('daily_chest_claimed', None)
+        expedition_active = data.pop('expedition_active', False)
+        expedition_start_time = data.pop('expedition_start_time', None)
         stats = cls(**data)
         stats.inventory = inventory
         stats.badges = badges
         stats.trophies = trophies
         stats.max_inventory = max_inventory
+        stats.daily_chest_claimed = daily_chest_claimed
+        stats.expedition_active = expedition_active
+        stats.expedition_start_time = expedition_start_time
         return stats
 
     def get_xp_for_level(self):
@@ -453,10 +462,36 @@ class UserStats:
             self.current_streak = 0
             self.perfect_streak = 0
             self.recent_completions = []  # limpa completions recentes
+            self.daily_chest_claimed = None  # reseta baú diário
+            self.expedition_active = False  # cancela expedição ativa
+            self.expedition_start_time = None
             # gold permanece
             self.current_month = now_month
             return True
         return False
+    
+    def manual_reset(self):
+        """Reset manual: reseta TUDO incluindo gold (não apaga tarefas)"""
+        # Salva troféu se tiver level
+        if self.level > 0:
+            trophy = Trophy(month=self.current_month + "_manual", level=self.level)
+            self.trophies.append(trophy)
+        
+        # Reseta tudo
+        self.xp = 0
+        self.gold = 0  # reseta gold também no reset manual
+        self.level = 0
+        self.inventory = []
+        self.max_inventory = 6
+        self.double_xp_active = False
+        self.last_xp_lost = 0
+        self.current_streak = 0
+        self.perfect_streak = 0
+        self.recent_completions = []
+        self.daily_chest_claimed = None
+        self.expedition_active = False
+        self.expedition_start_time = None
+        # Mantém badges e trophies
 
     def has_item(self, item_id: str) -> bool:
         return any(i.id == item_id for i in self.inventory)
@@ -623,8 +658,9 @@ class TaskDB:
             completion_time = datetime.now().isoformat()
             task.completed_at = completion_time
 
-            priority_xp = {"low": 2, "medium": 3, "high": 5}
-            xp_earned = priority_xp.get(task.priority, 3)
+            # NOVOS VALORES V6.0: low=3, medium=5, high=7
+            priority_xp = {"low": 3, "medium": 5, "high": 7}
+            xp_earned = priority_xp.get(task.priority, 5)
             on_time = False
 
             if task.due_date and task.due_time:
@@ -639,11 +675,13 @@ class TaskDB:
                 except:
                     pass
 
+            # Livro: +2 XP (novo valor V6.0)
             if self.stats.has_item("livro"):
-                xp_earned += 1
+                xp_earned += 2
 
+            # Escudo: +2 proteção (novo valor V6.0)
             if self.stats.has_item("escudo") and xp_earned < 0:
-                xp_earned += 1
+                xp_earned += 2
 
             if self.stats.double_xp_active:
                 xp_earned *= 2
@@ -651,9 +689,11 @@ class TaskDB:
 
             gold_earned = 3
 
+            # Livro: +1 Gold
             if self.stats.has_item("livro"):
                 gold_earned += 1
 
+            # Espada: +2 Gold (novo valor V6.0)
             if self.stats.has_item("espada"):
                 gold_earned += 2
 
@@ -849,6 +889,87 @@ class TaskDB:
             self.save()
             return True
         return False
+    
+    def claim_daily_chest(self) -> tuple:
+        """Baú diário: abre uma vez por dia com recompensas aleatórias"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        # Verifica se já abriu hoje
+        if self.stats.daily_chest_claimed == today:
+            return False, "Você já abriu o baú hoje! Volte amanhã.", None
+        
+        # Roll de recompensa (3% para cada prêmio especial)
+        roll = random.random()
+        
+        if roll < 0.03:
+            # 3% chance: 50 Gold
+            self.stats.gold += 50
+            reward_type = "gold"
+            reward_value = 50
+            message = "🎉 BAÚ DIÁRIO: Você encontrou 50 Gold!"
+        elif roll < 0.06:
+            # 3% chance: 50 XP
+            self.stats.xp += 50
+            self.stats.level = self.stats.xp // 100
+            reward_type = "xp"
+            reward_value = 50
+            message = "🎉 BAÚ DIÁRIO: Você ganhou 50 XP!"
+        else:
+            # 94% chance: item aleatório (mesma taxa de drop das missões)
+            drop_item = self._roll_drop()
+            if drop_item and len(self.stats.inventory) < self.stats.max_inventory:
+                self.stats.add_item(drop_item)
+                item_config = ITEMS_CONFIG.get(drop_item, {})
+                reward_type = "item"
+                reward_value = item_config.get("name", drop_item)
+                message = f"🎉 BAÚ DIÁRIO: Você encontrou {item_config.get('emoji', '🎁')} {item_config.get('name', 'um item')}!"
+            else:
+                # Se não puder pegar o item, dá gold compensatório
+                self.stats.gold += 10
+                reward_type = "gold"
+                reward_value = 10
+                message = "🎉 BAÚ DIÁRIO: Inventário cheio! Você recebeu 10 Gold compensatórios."
+        
+        self.stats.daily_chest_claimed = today
+        self.save()
+        return True, message, {"type": reward_type, "value": reward_value}
+    
+    def start_expedition(self) -> tuple:
+        """Inicia expedição de 1 hora"""
+        if self.stats.expedition_active:
+            elapsed = datetime.now() - datetime.fromisoformat(self.stats.expedition_start_time)
+            remaining = timedelta(hours=1) - elapsed
+            minutes = int(remaining.total_seconds() / 60)
+            return False, f"Expedição em andamento! Retorne em {minutes} minutos.", None
+        
+        self.stats.expedition_active = True
+        self.stats.expedition_start_time = datetime.now().isoformat()
+        self.save()
+        return True, "🗺️ Expedição iniciada! Retorne em 1 hora para coletar recompensas.", None
+    
+    def complete_expedition(self) -> tuple:
+        """Completa expedição e coleta recompensas"""
+        if not self.stats.expedition_active:
+            return False, "Nenhuma expedição em andamento.", None
+        
+        start_time = datetime.fromisoformat(self.stats.expedition_start_time)
+        elapsed = datetime.now() - start_time
+        
+        if elapsed < timedelta(hours=1):
+            remaining = timedelta(hours=1) - elapsed
+            minutes = int(remaining.total_seconds() / 60)
+            return False, f"Ainda faltam {minutes} minutos para completar a expedição!", None
+        
+        # Recompensa: 10 XP + 10 Gold
+        self.stats.xp += 10
+        self.stats.gold += 10
+        self.stats.level = self.stats.xp // 100
+        
+        self.stats.expedition_active = False
+        self.stats.expedition_start_time = None
+        self.save()
+        
+        return True, "⚔️ Expedição completada! +10 XP, +10 Gold", {"xp": 10, "gold": 10}
 
 
 # ============================================================
@@ -901,6 +1022,44 @@ def add_task():
 
     db.add_task(title, priority, category, due_date, due_time)
     flash('✅ Tarefa adicionada com sucesso!', 'success')
+    return redirect(url_for('index'))
+
+@app.route('/manual-reset', methods=['POST'])
+def manual_reset():
+    """Rota para reset manual (reseta tudo incluindo gold)"""
+    db.stats.manual_reset()
+    db.save()
+    flash('🔄 Reset manual realizado! Todos os status foram zerados.', 'info')
+    return redirect(url_for('index'))
+
+@app.route('/daily-chest')
+def daily_chest():
+    """Rota para abrir baú diário"""
+    success, message, reward = db.claim_daily_chest()
+    if success:
+        flash(message, 'success')
+    else:
+        flash(message, 'info')
+    return redirect(url_for('index'))
+
+@app.route('/expedition-start')
+def expedition_start():
+    """Inicia expedição"""
+    success, message, _ = db.start_expedition()
+    if success:
+        flash(message, 'success')
+    else:
+        flash(message, 'info')
+    return redirect(url_for('index'))
+
+@app.route('/expedition-complete')
+def expedition_complete():
+    """Completa expedição"""
+    success, message, _ = db.complete_expedition()
+    if success:
+        flash(message, 'success')
+    else:
+        flash(message, 'info')
     return redirect(url_for('index'))
 
 @app.route('/complete/<int:task_id>')
@@ -1316,7 +1475,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>📝 Minhas Tarefas - XP System V5.6</title>
+    <title>📝 Minhas Tarefas - XP System V6.0</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; }
@@ -1400,6 +1559,7 @@ TEMPLATE = r"""<!doctype html>
                         <button class="btn-icon" onclick="openInventoryModal()" title="Inventário">🎒</button>
                         <button class="btn-icon" onclick="location.href='{{ url_for('shop') }}'" title="Loja">🏪</button>
                         <button class="btn-icon" onclick="openStatsModal()" title="Stats">📊</button>
+                        <button class="btn-icon" onclick="openSettingsModal()" title="Configurações">⚙️</button>
                     </div>
                 </div>
                 <div class="badges-display">
@@ -1438,7 +1598,7 @@ TEMPLATE = r"""<!doctype html>
                             <div class="form-group"><label>Data</label><input type="date" name="due_date"></div>
                         </div>
                         <div class="form-row" style="grid-template-columns: 1fr;">
-                            <div class="form-group"><label>Hora</label><input type="time" name="due_time"></div>
+                            <div class="form-group"><label>Hora</label><input type="time" name="due_time" id="defaultTime"></div>
                         </div>
                         <button type="submit" style="width: 100%;">✅ Adicionar</button>
                     </form>
@@ -1551,8 +1711,50 @@ TEMPLATE = r"""<!doctype html>
         </div>
     </div>
 
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header"><div>⚙️ Configurações</div><button class="modal-close" onclick="closeSettingsModal()">&times;</button></div>
+            <div style="display: grid; gap: 16px;">
+                <div class="card" style="padding: 16px;">
+                    <h3 style="margin-bottom: 12px; font-size: 16px;">🎮 Game</h3>
+                    <div style="display: grid; gap: 8px;">
+                        <a href="{{ url_for('daily_chest') }}" class="btn" style="display: block; text-align: center; background: #8b5cf6; color: white; padding: 11px 16px; border-radius: 10px; text-decoration: none; font-weight: 600;">🎁 Baú Diário</a>
+                        {% if stats.expedition_active %}
+                            {% set elapsed = (now() - stats.expedition_start_time|datetime_from_iso).seconds // 60 if stats.expedition_start_time else 0 %}
+                            {% if elapsed >= 60 %}
+                                <a href="{{ url_for('expedition_complete') }}" class="btn" style="display: block; text-align: center; background: #34c759; color: white; padding: 11px 16px; border-radius: 10px; text-decoration: none; font-weight: 600;">⚔️ Coletar Expedição</a>
+                            {% else %}
+                                <button disabled style="display: block; width: 100%; text-align: center; background: #2a3a60; color: #a8b5c8; padding: 11px 16px; border-radius: 10px; cursor: not-allowed;">⏳ Expedição em andamento...</button>
+                            {% endif %}
+                        {% else %}
+                            <a href="{{ url_for('expedition_start') }}" class="btn" style="display: block; text-align: center; background: #ff9500; color: white; padding: 11px 16px; border-radius: 10px; text-decoration: none; font-weight: 600;">🗺️ Iniciar Expedição (1h)</a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card" style="padding: 16px;">
+                    <h3 style="margin-bottom: 12px; font-size: 16px; color: #b72f4a;">⚠️ Zona de Perigo</h3>
+                    <form method="post" action="{{ url_for('manual_reset') }}" onsubmit="return confirm('TEM CERTEZA? Isso vai resetar TODO seu progresso (XP, Gold, Itens, Level). Tarefas NÃO serão apagadas.')">
+                        <button type="submit" class="danger" style="width: 100%;">🔄 Reset Manual Completo</button>
+                    </form>
+                    <p style="font-size: 12px; color: #a8b5c8; margin-top: 8px;">O reset mensal mantém o Gold. O reset manual reseta TUDO.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
-        function toggleSection(e,t){const c=e.nextElementSibling,o=e.querySelector('.section-toggle');c.classList.toggle('collapsed'),o.classList.toggle('collapsed'),localStorage.setItem('section-'+t,c.classList.contains('collapsed')?'collapsed':'expanded')}function restoreSectionStates(){['nova-tarefa','tarefas-ativas','historico'].forEach(e=>{if('expanded'===localStorage.getItem('section-'+e)){const t=document.querySelector(`[data-section="${e}"]`);t&&(t.classList.remove('collapsed'),t.previousElementSibling.querySelector('.section-toggle').classList.remove('collapsed'))}})}function openNameModal(){document.getElementById('nameModal').classList.add('active')}function closeNameModal(){document.getElementById('nameModal').classList.remove('active')}function openInventoryModal(){document.getElementById('inventoryModal').classList.add('active'),loadInventory()}function closeInventoryModal(){document.getElementById('inventoryModal').classList.remove('active')}function openStatsModal(){document.getElementById('statsModal').classList.add('active'),loadStats()}function closeStatsModal(){document.getElementById('statsModal').classList.remove('active')}function loadInventory(){fetch('/api/inventory').then(e=>e.json()).then(e=>{document.getElementById('inventoryCount').textContent=e.length;let t='<div><h3 style="margin-bottom: 12px;">🎒 Items</h3>';e.length?e.forEach(e=>{const isEquipped=e.equipped||false;const borderStyle=isEquipped?'border: 2px solid #FFD700;':'';const btnText='permanent'===e.item_type?(isEquipped?'Desequipar':'Equipar'):('consumable'===e.item_type?'Usar':'');const btnClass='permanent'===e.item_type?(isEquipped?'warning':'info'):('consumable'===e.item_type?'success':'');const i='permanent'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="${btnClass}" style="width: 100%; padding: 6px;">${btnText}</button></form>`:'consumable'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="${btnClass}" style="width: 100%; padding: 6px;">${btnText}</button></form>`:'';t+=`<div class="card" style="margin-bottom: 8px; padding: 12px; ${borderStyle}"><div style="font-weight: 600;">${e.emoji} ${e.name}</div><div style="font-size: 12px; opacity: 0.7; margin: 4px 0;">${e.rarity}</div><div style="font-size: 13px; color: #a8b5c8;">${e.description}</div><div style="display: flex; gap: 8px; margin-top: 8px;">${i}<form method="post" action="/sell-item/${e.id}" style="flex: 1;"><button type="submit" class="warning" style="width: 100%; padding: 6px;">Vender ${e.sell_price}G</button></form></div></div>`}):t+='<p style="opacity: 0.7;">Inventário vazio</p>',t+='</div>',document.getElementById('inventoryContent').innerHTML=t})}function loadStats(){fetch('/api/stats').then(e=>e.json()).then(e=>{document.getElementById('statsContent').innerHTML=`<div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">${e.rank}</div><div>Nível ${e.level} • ${e.xp} XP</div></div><div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;"><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🔥</div><div style="font-size: 20px; font-weight: 700;">${e.current_streak}</div><div style="font-size: 12px; opacity: 0.7;">Streak</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">✅</div><div style="font-size: 20px; font-weight: 700;">${e.total_completed}</div><div style="font-size: 12px; opacity: 0.7;">Concluídas</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🎒</div><div style="font-size: 20px; font-weight: 700;">${e.inventory_count}/${e.max_inventory}</div><div style="font-size: 12px; opacity: 0.7;">Inventário</div></div></div>`})}function openEditModal(e,t,i,a,l,s,d){document.getElementById('editTitle').value=t,document.getElementById('editPriority').value=i||'low',document.getElementById('editCategory').value=a||'pessoal',document.getElementById('editDueDate').value=l||'',document.getElementById('editDueTime').value=s||'',document.getElementById('editDescription').value=d||'',document.getElementById('editForm').action='/update-task/'+e,document.getElementById('editModal').classList.add('active')}function closeEditModal(){document.getElementById('editModal').classList.remove('active')}document.getElementById('nameModal')?.addEventListener('click',function(e){e.target===this&&closeNameModal()}),document.getElementById('inventoryModal')?.addEventListener('click',function(e){e.target===this&&closeInventoryModal()}),document.getElementById('statsModal')?.addEventListener('click',function(e){e.target===this&&closeStatsModal()}),document.getElementById('editModal')?.addEventListener('click',function(e){e.target===this&&closeEditModal()}),window.addEventListener('load',restoreSectionStates);
+        function toggleSection(e,t){const c=e.nextElementSibling,o=e.querySelector('.section-toggle');c.classList.toggle('collapsed'),o.classList.toggle('collapsed'),localStorage.setItem('section-'+t,c.classList.contains('collapsed')?'collapsed':'expanded')}function restoreSectionStates(){['nova-tarefa','tarefas-ativas','historico'].forEach(e=>{if('expanded'===localStorage.getItem('section-'+e)){const t=document.querySelector(`[data-section="${e}"]`);t&&(t.classList.remove('collapsed'),t.previousElementSibling.querySelector('.section-toggle').classList.remove('collapsed'))}})}function openNameModal(){document.getElementById('nameModal').classList.add('active')}function closeNameModal(){document.getElementById('nameModal').classList.remove('active')}function openInventoryModal(){document.getElementById('inventoryModal').classList.add('active'),loadInventory()}function closeInventoryModal(){document.getElementById('inventoryModal').classList.remove('active')}function openStatsModal(){document.getElementById('statsModal').classList.add('active'),loadStats()}function closeStatsModal(){document.getElementById('statsModal').classList.remove('active')}function openSettingsModal(){document.getElementById('settingsModal').classList.add('active')}function closeSettingsModal(){document.getElementById('settingsModal').classList.remove('active')}function loadInventory(){fetch('/api/inventory').then(e=>e.json()).then(e=>{document.getElementById('inventoryCount').textContent=e.length;let t='<div><h3 style="margin-bottom: 12px;">🎒 Items</h3>';e.length?e.forEach(e=>{const isEquipped=e.equipped||false;const borderStyle=isEquipped?'border: 2px solid #FFD700;':'';const btnText='permanent'===e.item_type?(isEquipped?'Desequipar':'Equipar'):('consumable'===e.item_type?'Usar':'');const btnClass='permanent'===e.item_type?(isEquipped?'warning':'info'):('consumable'===e.item_type?'success':'');const i='permanent'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="${btnClass}" style="width: 100%; padding: 6px;">${btnText}</button></form>`:'consumable'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="${btnClass}" style="width: 100%; padding: 6px;">${btnText}</button></form>`:'';t+=`<div class="card" style="margin-bottom: 8px; padding: 12px; ${borderStyle}"><div style="font-weight: 600;">${e.emoji} ${e.name}</div><div style="font-size: 12px; opacity: 0.7; margin: 4px 0;">${e.rarity}</div><div style="font-size: 13px; color: #a8b5c8;">${e.description}</div><div style="display: flex; gap: 8px; margin-top: 8px;">${i}<form method="post" action="/sell-item/${e.id}" style="flex: 1;"><button type="submit" class="warning" style="width: 100%; padding: 6px;">Vender ${e.sell_price}G</button></form></div></div>`}):t+='<p style="opacity: 0.7;">Inventário vazio</p>',t+='</div>',document.getElementById('inventoryContent').innerHTML=t})}function loadStats(){fetch('/api/stats').then(e=>e.json()).then(e=>{document.getElementById('statsContent').innerHTML=`<div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">${e.rank}</div><div>Nível ${e.level} • ${e.xp} XP</div></div><div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;"><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🔥</div><div style="font-size: 20px; font-weight: 700;">${e.current_streak}</div><div style="font-size: 12px; opacity: 0.7;">Streak</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">✅</div><div style="font-size: 20px; font-weight: 700;">${e.total_completed}</div><div style="font-size: 12px; opacity: 0.7;">Concluídas</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🎒</div><div style="font-size: 20px; font-weight: 700;">${e.inventory_count}/${e.max_inventory}</div><div style="font-size: 12px; opacity: 0.7;">Inventário</div></div></div>`})}function openEditModal(e,t,i,a,l,s,d){document.getElementById('editTitle').value=t,document.getElementById('editPriority').value=i||'low',document.getElementById('editCategory').value=a||'pessoal',document.getElementById('editDueDate').value=l||'',document.getElementById('editDueTime').value=s||'',document.getElementById('editDescription').value=d||'',document.getElementById('editForm').action='/update-task/'+e,document.getElementById('editModal').classList.add('active')}function closeEditModal(){document.getElementById('editModal').classList.remove('active')}document.getElementById('nameModal')?.addEventListener('click',function(e){e.target===this&&closeNameModal()}),document.getElementById('inventoryModal')?.addEventListener('click',function(e){e.target===this&&closeInventoryModal()}),document.getElementById('statsModal')?.addEventListener('click',function(e){e.target===this&&closeStatsModal()}),document.getElementById('editModal')?.addEventListener('click',function(e){e.target===this&&closeEditModal()}),document.getElementById('settingsModal')?.addEventListener('click',function(e){e.target===this&&closeSettingsModal()}),window.addEventListener('load',restoreSectionStates);
+        
+        // Preenche hora atual automaticamente no campo de hora
+        window.addEventListener('load', function() {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const timeInput = document.getElementById('defaultTime');
+            if (timeInput) {
+                timeInput.value = `${hours}:${minutes}`;
+            }
+        });
     </script>
 </body>
 </html>"""
@@ -1575,13 +1777,13 @@ if __name__ == '__main__':
     url = f"http://localhost:{port}"
 
     print("\n" + "="*60)
-    print("🚀 INICIANDO TODO APP V5.6")
+    print("🚀 INICIANDO TODO APP V6.0")
     print("="*60)
     print(f"🌐 URL: {url}")
     print(f"📊 Dados: tasks.json")
-    print(f"🛍️  Loja com Cigarrinho antes de Café!")
-    print(f"🗓️  Reset mensal com inventário limpo!")
-    print(f"📅 Date/Time com seletor nativo!")
+    print(f"🎮 Game: Baú Diário e Expedição!")
+    print(f"⚙️  Configurações com Reset Manual!")
+    print(f"🕐 Hora automática no campo de tarefa!")
     print(f"🖥️  Abrindo navegador...\n")
 
     webbrowser.open(url)
