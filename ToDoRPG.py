@@ -1739,11 +1739,17 @@ TEMPLATE = r"""<!doctype html>
                     <div style="display: grid; gap: 8px;">
                         <a href="{{ url_for('daily_chest') }}" class="btn" style="display: block; text-align: center; background: #8b5cf6; color: white; padding: 11px 16px; border-radius: 10px; text-decoration: none; font-weight: 600;">🎁 Baú Diário</a>
                         {% if stats.expedition_active %}
-                            {% set elapsed = (now() - stats.expedition_start_time|datetime_from_iso).seconds // 60 if stats.expedition_start_time else 0 %}
-                            {% if elapsed >= 60 %}
+                            {% set start_time = stats.expedition_start_time|datetime_from_iso if stats.expedition_start_time else now() %}
+                            {% set elapsed_seconds = (now() - start_time).total_seconds() | int %}
+                            {% set remaining_seconds = [3600 - elapsed_seconds, 0] | max %}
+                            {% set remaining_hours = remaining_seconds // 3600 %}
+                            {% set remaining_minutes = (remaining_seconds % 3600) // 60 %}
+                            {% set remaining_secs = remaining_seconds % 60 %}
+                            {% set remaining_time = "%02d:%02d:%02d" % (remaining_hours, remaining_minutes, remaining_secs) %}
+                            {% if elapsed_seconds >= 3600 %}
                                 <a href="{{ url_for('expedition_complete') }}" class="btn" style="display: block; text-align: center; background: #34c759; color: white; padding: 11px 16px; border-radius: 10px; text-decoration: none; font-weight: 600;">⚔️ Coletar Expedição</a>
                             {% else %}
-                                <button disabled style="display: block; width: 100%; text-align: center; background: #2a3a60; color: #a8b5c8; padding: 11px 16px; border-radius: 10px; cursor: not-allowed;">⏳ Expedição em andamento...</button>
+                                <button disabled style="display: block; width: 100%; text-align: center; background: #2a3a60; color: #a8b5c8; padding: 11px 16px; border-radius: 10px; cursor: not-allowed;">⏳ Expedição em andamento... ({{ remaining_time }})</button>
                             {% endif %}
                         {% else %}
                             <a href="{{ url_for('expedition_start') }}" class="btn" style="display: block; text-align: center; background: #ff9500; color: white; padding: 11px 16px; border-radius: 10px; text-decoration: none; font-weight: 600;">🗺️ Iniciar Expedição (1h)</a>
