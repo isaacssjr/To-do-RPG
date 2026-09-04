@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-To-Do App com XP System e Gamificação - VERSÃO 5.6
-Desenvolvido para Isaac - Certare
+To-Do App com XP System e Gamificação - VERSÃO 5.7
+Desenvolvido para Isaac - Integra
 Sistema de items, gold, streaks, badges, troféus mensais
 Com ativação de itens permanentes, drops BALANCEADOS, LOJA com markup 5x
-MODIFICAÇÕES V5.6:
-- Input date/time com calendário nativo (type="date" e type="time")
-- Reset mensal limpando inventário (mantém apenas gold)
-- Certarioca antes de Café na loja (ORDER_FIX)
+MODIFICAÇÕES V5.7:
+- Sistema de equipamento para itens permanentes (bordas douradas quando equipado)
+- Bolsa Mística agora é equipavel/desequipavel (não some do inventário)
+- Badge speed_demon implementada (5 tarefas em 1 hora)
+- Reset mensal limpa recent_completions
+- Validação na compra de itens permanentes duplicados
+- Nomes atualizados: Certarioca → Cigarrinho, Certare → Integra
 """
 
 from __future__ import annotations
@@ -41,9 +44,9 @@ class DependencyManager:
         """Exibe banner de inicialização"""
         print("""
 ╔════════════════════════════════════════════════════════════════╗
-║  📝 TODO APP COM XP SYSTEM - VERSÃO 5.6                       ║
-║  🚀 Isaac (Integra) - Drops Mais Raros & Equilibrados         ║
-║  ✨ Novas Melhorias: Date/Time Nativo, Inventário Mensal     ║
+║  📝 TODO APP COM XP SYSTEM - VERSÃO 5.7                       ║
+║  🚀 Isaac (Integra) - Sistema de Equipamento Implementado     ║
+║  ✨ Novidades: Bolsa Equipavel, Speed Demon, UI Dourada       ║
 ║  🔧 Verificando dependências...                               ║
 ╚════════════════════════════════════════════════════════════════╝
         """)
@@ -254,7 +257,7 @@ ITEMS_CONFIG = {
 }
 
 # Ordem fixa para itens comuns alinhados na loja
-ORDER_FIX = ["pizza", "certarioca", "cafe", "bolsa", "livro", "espada", "escudo", "coroa"]
+ORDER_FIX = ["pizza", "cigarrinho", "cafe", "bolsa", "livro", "espada", "escudo", "coroa"]
 
 
 # ============================================================
@@ -292,12 +295,16 @@ class Item:
     item_type: str
     description: str
     sell_price: int = 0
+    equipped: bool = False
 
     def to_dict(self):
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data):
+        # Garante compatibilidade com saves antigos sem o campo 'equipped'
+        if 'equipped' not in data:
+            data['equipped'] = False
         return cls(**data)
 
 
@@ -384,6 +391,7 @@ class UserStats:
     badges: List[Badge] = field(default_factory=list)
     trophies: List[Trophy] = field(default_factory=list)
     max_inventory: int = 6
+    recent_completions: List[str] = field(default_factory=list)  # Para speed_demon badge
 
     def to_dict(self):
         data = asdict(self)
@@ -432,14 +440,19 @@ class UserStats:
                 trophy = Trophy(month=self.current_month, level=self.level)
                 self.trophies.append(trophy)
 
+            # Calcula espaço base do inventario (sem bolsa equipada)
+            base_inventory = 6
+            
             # Reset mensal
             self.xp = 0
             self.level = 0
             self.inventory = []           # limpa inventário
+            self.max_inventory = base_inventory  # reseta para o base
             self.double_xp_active = False
             self.last_xp_lost = 0
             self.current_streak = 0
             self.perfect_streak = 0
+            self.recent_completions = []  # limpa completions recentes
             # gold permanece
             self.current_month = now_month
             return True
@@ -494,6 +507,7 @@ class UserStats:
         return badge
 
     def update_streak(self, completion_time: str):
+        """Atualiza streaks e verifica badge speed_demon (5 tarefas em 1 hora)"""
         today = datetime.now().strftime("%Y-%m-%d")
 
         if self.last_completion_date is None:
@@ -514,6 +528,14 @@ class UserStats:
             self.best_streak = self.current_streak
 
         self.last_completion_date = today
+        
+        # Speed demon: adiciona timestamp e remove antigos (> 1 hora)
+        self.recent_completions.append(completion_time)
+        one_hour_ago = datetime.now().timestamp() - 3600
+        self.recent_completions = [
+            t for t in self.recent_completions 
+            if datetime.fromisoformat(t).timestamp() > one_hour_ago
+        ]
 
 
 class TaskDB:
@@ -676,6 +698,11 @@ class TaskDB:
                 badge = self.stats.add_badge("perfect_10")
                 if badge: new_badges.append(badge)
 
+            # Speed demon: 5 tarefas em 1 hora
+            if len(self.stats.recent_completions) >= 5:
+                badge = self.stats.add_badge("speed_demon")
+                if badge: new_badges.append(badge)
+
             hour = datetime.now().hour
             if hour >= 22:
                 badge = self.stats.add_badge("night_owl")
@@ -708,7 +735,7 @@ class TaskDB:
         Sistema de drop com chances BALANCEADAS:
         pizza - 15%
         cafe - 15%
-        certarioca - 10%
+        cigarrinho - 10%
         bolsa - 3%
         livro - 3%
         espada - 3%
@@ -724,7 +751,7 @@ class TaskDB:
         elif roll < 0.30:
             return "cafe"
         elif roll < 0.40:
-            return "certarioca"
+            return "cigarrinho"
         elif roll < 0.43:
             if not self.stats.has_item("bolsa"):
                 return "bolsa"
@@ -748,13 +775,35 @@ class TaskDB:
 
         return None
 
-    def activate_item(self, item_id: str) -> bool:
-        """Ativa efeito permanente de um item"""
+    def activate_item(self, item_id: str) -> tuple:
+        """Ativa/desativa efeito permanente de um item. Retorna (sucesso, mensagem, equipado)"""
+        item = next((i for i in self.stats.inventory if i.id == item_id), None)
+        if not item or item.item_type != "permanent":
+            return False, "Item não encontrado ou não é permanente", False
+        
         if item_id == "bolsa":
-            self.stats.max_inventory += 6
-            self.save()
-            return True
-        return False
+            if item.equipped:
+                # Desativar bolsa
+                self.stats.max_inventory -= 6
+                item.equipped = False
+                self.save()
+                return True, "Bolsa Mística desequipada! Inventário reduzido em 6 slots.", False
+            else:
+                # Ativar bolsa
+                self.stats.max_inventory += 6
+                item.equipped = True
+                self.save()
+                return True, "Bolsa Mística equipada! +6 slots no inventário.", True
+        
+        # Para outros itens permanentes (livro, espada, escudo, coroa) - apenas toggle visual
+        item.equipped = not item.equipped
+        self.save()
+        status = "equipado" if item.equipped else "desequipado"
+        return True, f"{item.name} {status}!", item.equipped
+    
+    def get_equipped_items(self) -> List[str]:
+        """Retorna lista de IDs dos itens equipados"""
+        return [i.id for i in self.stats.inventory if getattr(i, 'equipped', False)]
 
     def restore_task(self, task_id: int) -> Optional[Task]:
         task = self.get_task(task_id)
@@ -966,12 +1015,12 @@ def use_item(item_id: str):
             else:
                 flash('❌ Sem gold suficiente!', 'error')
 
-        elif item_id == "certarioca":
+        elif item_id == "cigarrinho":
             if db.stats.last_xp_lost > 0:
                 db.stats.xp += db.stats.last_xp_lost
                 db.stats.last_xp_lost = 0
                 used = True
-                flash('🧃 Certarioca: XP restaurado!', 'success')
+                flash('🧃 Cigarrinho: XP restaurado!', 'success')
             else:
                 flash('❌ Sem XP perdido para restaurar!', 'error')
 
@@ -981,11 +1030,13 @@ def use_item(item_id: str):
             flash('☕ Café: 2x XP próxima tarefa! ✨', 'info')
 
     elif item.item_type == "permanent":
-        if item_id == "bolsa":
-            if db.activate_item("bolsa"):
-                db.stats.remove_item(item_id)
-                flash(f'👜 Bolsa Mística ativada! +6 espaços = {db.stats.max_inventory} total!', 'success')
-                used = True
+        # Ativa/desativa item permanente com sistema de equipamento
+        success, message, equipped = db.activate_item(item_id)
+        if success:
+            flash(message, 'success' if equipped else 'info')
+            used = True
+        else:
+            flash(message, 'error')
 
     if used:
         if item.item_type == "consumable":
