@@ -173,7 +173,7 @@ ITEMS_CONFIG = {
         "drop_chance": 0.15
     },
     "Cigarrinho": {
-        "name": "Certarioca Mágica",
+        "name": "Cigarrinho Mágico",
         "emoji": "🧃",
         "type": "consumable",
         "rarity": "common",
@@ -257,7 +257,7 @@ ITEMS_CONFIG = {
 }
 
 # Ordem fixa para itens comuns alinhados na loja
-ORDER_FIX = ["pizza", "cigarrinho", "cafe", "bolsa", "livro", "espada", "escudo", "coroa"]
+ORDER_FIX = ["pizza", "Cigarrinho", "cafe", "bolsa", "livro", "espada", "escudo", "coroa"]
 
 
 # ============================================================
@@ -1054,6 +1054,12 @@ def sell_item(item_id: str):
         return redirect(url_for('index'))
 
     sell_price = item.sell_price
+    # Se o item estiver equipado, desequipar primeiro
+    if getattr(item, 'equipped', False):
+        if item_id == "bolsa":
+            db.stats.max_inventory -= 6
+        item.equipped = False
+
     db.stats.gold += sell_price
     db.stats.remove_item(item_id)
     db.save()
@@ -1120,7 +1126,7 @@ def shop():
                 'type': config['type']
             })
 
-    # Ordena por preço e, em caso de empate, pela ordem fixa (Certarioca antes do Café)
+    # Ordena por preço e, em caso de empate, pela ordem fixa (Cigarrinho antes do Café)
     shop_items.sort(
         key=lambda x: (
             x['shop_price'],
@@ -1546,7 +1552,7 @@ TEMPLATE = r"""<!doctype html>
     </div>
 
     <script>
-        function toggleSection(e,t){const c=e.nextElementSibling,o=e.querySelector('.section-toggle');c.classList.toggle('collapsed'),o.classList.toggle('collapsed'),localStorage.setItem('section-'+t,c.classList.contains('collapsed')?'collapsed':'expanded')}function restoreSectionStates(){['nova-tarefa','tarefas-ativas','historico'].forEach(e=>{if('expanded'===localStorage.getItem('section-'+e)){const t=document.querySelector(`[data-section="${e}"]`);t&&(t.classList.remove('collapsed'),t.previousElementSibling.querySelector('.section-toggle').classList.remove('collapsed'))}})}function openNameModal(){document.getElementById('nameModal').classList.add('active')}function closeNameModal(){document.getElementById('nameModal').classList.remove('active')}function openInventoryModal(){document.getElementById('inventoryModal').classList.add('active'),loadInventory()}function closeInventoryModal(){document.getElementById('inventoryModal').classList.remove('active')}function openStatsModal(){document.getElementById('statsModal').classList.add('active'),loadStats()}function closeStatsModal(){document.getElementById('statsModal').classList.remove('active')}function loadInventory(){fetch('/api/inventory').then(e=>e.json()).then(e=>{document.getElementById('inventoryCount').textContent=e.length;let t='<div><h3 style="margin-bottom: 12px;">🎒 Items</h3>';e.length?e.forEach(e=>{const i='permanent'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="info" style="width: 100%; padding: 6px;">Ativar</button></form>`:'consumable'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="success" style="width: 100%; padding: 6px;">Usar</button></form>`:'';t+=`<div class="card" style="margin-bottom: 8px; padding: 12px;"><div style="font-weight: 600;">${e.emoji} ${e.name}</div><div style="font-size: 12px; opacity: 0.7; margin: 4px 0;">${e.rarity}</div><div style="font-size: 13px; color: #a8b5c8;">${e.description}</div><div style="display: flex; gap: 8px; margin-top: 8px;">${i}<form method="post" action="/sell-item/${e.id}" style="flex: 1;"><button type="submit" class="warning" style="width: 100%; padding: 6px;">Vender ${e.sell_price}G</button></form></div></div>`}):t+='<p style="opacity: 0.7;">Inventário vazio</p>',t+='</div>',document.getElementById('inventoryContent').innerHTML=t})}function loadStats(){fetch('/api/stats').then(e=>e.json()).then(e=>{document.getElementById('statsContent').innerHTML=`<div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">${e.rank}</div><div>Nível ${e.level} • ${e.xp} XP</div></div><div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;"><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🔥</div><div style="font-size: 20px; font-weight: 700;">${e.current_streak}</div><div style="font-size: 12px; opacity: 0.7;">Streak</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">✅</div><div style="font-size: 20px; font-weight: 700;">${e.total_completed}</div><div style="font-size: 12px; opacity: 0.7;">Concluídas</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🎒</div><div style="font-size: 20px; font-weight: 700;">${e.inventory_count}/${e.max_inventory}</div><div style="font-size: 12px; opacity: 0.7;">Inventário</div></div></div>`})}function openEditModal(e,t,i,a,l,s,d){document.getElementById('editTitle').value=t,document.getElementById('editPriority').value=i||'low',document.getElementById('editCategory').value=a||'pessoal',document.getElementById('editDueDate').value=l||'',document.getElementById('editDueTime').value=s||'',document.getElementById('editDescription').value=d||'',document.getElementById('editForm').action='/update-task/'+e,document.getElementById('editModal').classList.add('active')}function closeEditModal(){document.getElementById('editModal').classList.remove('active')}document.getElementById('nameModal')?.addEventListener('click',function(e){e.target===this&&closeNameModal()}),document.getElementById('inventoryModal')?.addEventListener('click',function(e){e.target===this&&closeInventoryModal()}),document.getElementById('statsModal')?.addEventListener('click',function(e){e.target===this&&closeStatsModal()}),document.getElementById('editModal')?.addEventListener('click',function(e){e.target===this&&closeEditModal()}),window.addEventListener('load',restoreSectionStates);
+        function toggleSection(e,t){const c=e.nextElementSibling,o=e.querySelector('.section-toggle');c.classList.toggle('collapsed'),o.classList.toggle('collapsed'),localStorage.setItem('section-'+t,c.classList.contains('collapsed')?'collapsed':'expanded')}function restoreSectionStates(){['nova-tarefa','tarefas-ativas','historico'].forEach(e=>{if('expanded'===localStorage.getItem('section-'+e)){const t=document.querySelector(`[data-section="${e}"]`);t&&(t.classList.remove('collapsed'),t.previousElementSibling.querySelector('.section-toggle').classList.remove('collapsed'))}})}function openNameModal(){document.getElementById('nameModal').classList.add('active')}function closeNameModal(){document.getElementById('nameModal').classList.remove('active')}function openInventoryModal(){document.getElementById('inventoryModal').classList.add('active'),loadInventory()}function closeInventoryModal(){document.getElementById('inventoryModal').classList.remove('active')}function openStatsModal(){document.getElementById('statsModal').classList.add('active'),loadStats()}function closeStatsModal(){document.getElementById('statsModal').classList.remove('active')}function loadInventory(){fetch('/api/inventory').then(e=>e.json()).then(e=>{document.getElementById('inventoryCount').textContent=e.length;let t='<div><h3 style="margin-bottom: 12px;">🎒 Items</h3>';e.length?e.forEach(e=>{const isEquipped=e.equipped||false;const borderStyle=isEquipped?'border: 2px solid #FFD700;':'';const btnText='permanent'===e.item_type?(isEquipped?'Desequipar':'Equipar'):('consumable'===e.item_type?'Usar':'');const btnClass='permanent'===e.item_type?(isEquipped?'warning':'info'):('consumable'===e.item_type?'success':'');const i='permanent'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="${btnClass}" style="width: 100%; padding: 6px;">${btnText}</button></form>`:'consumable'===e.item_type?`<form method="post" action="/use-item/${e.id}" style="flex: 1;"><button type="submit" class="${btnClass}" style="width: 100%; padding: 6px;">${btnText}</button></form>`:'';t+=`<div class="card" style="margin-bottom: 8px; padding: 12px; ${borderStyle}"><div style="font-weight: 600;">${e.emoji} ${e.name}</div><div style="font-size: 12px; opacity: 0.7; margin: 4px 0;">${e.rarity}</div><div style="font-size: 13px; color: #a8b5c8;">${e.description}</div><div style="display: flex; gap: 8px; margin-top: 8px;">${i}<form method="post" action="/sell-item/${e.id}" style="flex: 1;"><button type="submit" class="warning" style="width: 100%; padding: 6px;">Vender ${e.sell_price}G</button></form></div></div>`}):t+='<p style="opacity: 0.7;">Inventário vazio</p>',t+='</div>',document.getElementById('inventoryContent').innerHTML=t})}function loadStats(){fetch('/api/stats').then(e=>e.json()).then(e=>{document.getElementById('statsContent').innerHTML=`<div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">${e.rank}</div><div>Nível ${e.level} • ${e.xp} XP</div></div><div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;"><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🔥</div><div style="font-size: 20px; font-weight: 700;">${e.current_streak}</div><div style="font-size: 12px; opacity: 0.7;">Streak</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">✅</div><div style="font-size: 20px; font-weight: 700;">${e.total_completed}</div><div style="font-size: 12px; opacity: 0.7;">Concluídas</div></div><div class="card" style="padding: 16px; text-align: center;"><div style="font-size: 28px; margin-bottom: 4px;">🎒</div><div style="font-size: 20px; font-weight: 700;">${e.inventory_count}/${e.max_inventory}</div><div style="font-size: 12px; opacity: 0.7;">Inventário</div></div></div>`})}function openEditModal(e,t,i,a,l,s,d){document.getElementById('editTitle').value=t,document.getElementById('editPriority').value=i||'low',document.getElementById('editCategory').value=a||'pessoal',document.getElementById('editDueDate').value=l||'',document.getElementById('editDueTime').value=s||'',document.getElementById('editDescription').value=d||'',document.getElementById('editForm').action='/update-task/'+e,document.getElementById('editModal').classList.add('active')}function closeEditModal(){document.getElementById('editModal').classList.remove('active')}document.getElementById('nameModal')?.addEventListener('click',function(e){e.target===this&&closeNameModal()}),document.getElementById('inventoryModal')?.addEventListener('click',function(e){e.target===this&&closeInventoryModal()}),document.getElementById('statsModal')?.addEventListener('click',function(e){e.target===this&&closeStatsModal()}),document.getElementById('editModal')?.addEventListener('click',function(e){e.target===this&&closeEditModal()}),window.addEventListener('load',restoreSectionStates);
     </script>
 </body>
 </html>"""
@@ -1573,7 +1579,7 @@ if __name__ == '__main__':
     print("="*60)
     print(f"🌐 URL: {url}")
     print(f"📊 Dados: tasks.json")
-    print(f"🛍️  Loja com Certarioca antes de Café!")
+    print(f"🛍️  Loja com Cigarrinho antes de Café!")
     print(f"🗓️  Reset mensal com inventário limpo!")
     print(f"📅 Date/Time com seletor nativo!")
     print(f"🖥️  Abrindo navegador...\n")
