@@ -25,7 +25,7 @@
     "max_inventory": 6,
     "recent_completions": [],
     "daily_chest_claimed": null,
-    "expedition_active": false,
-    "expedition_start_time": null
+    "expedition_active": true,
+    "expedition_start_time": "2026-09-04T14:20:25.401357"
   }
 }
